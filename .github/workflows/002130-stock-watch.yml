@@ -438,7 +438,7 @@ jobs:
           fi
 
           # 仅执行单股分析（不做大盘复盘）
-          python main.py --no-market-review $FORCE_RUN_ARG
+          python main.py --stocks $STOCK_LIST --no-market-review $FORCE_RUN_ARG
 
       - name: 上传分析报告
         uses: actions/upload-artifact@v6
