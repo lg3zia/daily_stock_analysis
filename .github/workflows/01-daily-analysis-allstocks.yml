@@ -1,12 +1,12 @@
-name: 每日大盘复盘
+name: 每日全股聚合推送
 
-# 该 flow 仅做大盘复盘并通过已配置渠道推送，不再做自选股分析。
-# 个股分析请使用 01-single-stock-watch.yml 等独立 flow。
+# 聚合推送所有关注的股票分析，不推送大盘数据。
+# STOCK_LIST 优先使用 GitHub Secrets/Variables 配置，为空时使用 step env 中的默认值。
 
 on:
-  # 定时触发 - 每天北京时间 18:00 (UTC 10:00)
+  # 定时触发 - 每天北京时间 06:00 (UTC 前一天 22:00)
   schedule:
-    - cron: '0 10 * * 1-5'     # 周一到周五，UTC 10:00 = 北京时间 18:00
+    - cron: '0 22 * * 0-4'     # 周日到周四 UTC 22:00 = 周一到周五北京时间 06:00
 
   # 手动触发
   workflow_dispatch:
@@ -17,9 +17,18 @@ on:
         default: false
         type: boolean
 
-# 并发控制：同一时间只运行一个大盘复盘任务
+# ==========================================
+# 🔧 自定义配置区
+# ------------------------------------------
+# FEISHU_WEBHOOK_URL: 聚合推送专用飞书机器人
+# STOCK_LIST: 在 step env 中定义，优先 secrets/vars → 默认值
+# ==========================================
+env:
+  FEISHU_WEBHOOK_URL: 'https://open.feishu.cn/open-apis/bot/v2/hook/248ac223-0d8f-4d18-bb06-7856309590c7'
+
+# 并发控制：同一时间只运行一个聚合推送任务
 concurrency:
-  group: stock-analysis-market-review
+  group: stock-analysis-allstocks
   cancel-in-progress: false
 
 jobs:
@@ -50,7 +59,7 @@ jobs:
         run: |
           mkdir -p data logs reports
       
-      - name: 执行大盘复盘
+      - name: 执行全股聚合分析
         env:
           # ==========================================
           # AI 配置
@@ -262,8 +271,8 @@ jobs:
           WECHAT_WEBHOOK_URL: ${{ secrets.WECHAT_WEBHOOK_URL }}
           WECHAT_MSG_TYPE: ${{ vars.WECHAT_MSG_TYPE || secrets.WECHAT_MSG_TYPE || 'markdown' }}
           
-          # 方式二：飞书 Webhook（大盘复盘专用机器人，硬编码）
-          FEISHU_WEBHOOK_URL: 'https://open.feishu.cn/open-apis/bot/v2/hook/0299a071-678f-46c9-a723-273775bea678'
+          # 方式二：飞书 Webhook
+          # 注意：FEISHU_WEBHOOK_URL 已在文件顶部 env 块硬编码，此处不重复声明。
           FEISHU_WEBHOOK_SECRET: ${{ secrets.FEISHU_WEBHOOK_SECRET }}
           FEISHU_WEBHOOK_KEYWORD: ${{ vars.FEISHU_WEBHOOK_KEYWORD || secrets.FEISHU_WEBHOOK_KEYWORD }}
           
@@ -334,10 +343,10 @@ jobs:
           NOTIFICATION_DAILY_DIGEST_ENABLED: ${{ vars.NOTIFICATION_DAILY_DIGEST_ENABLED || secrets.NOTIFICATION_DAILY_DIGEST_ENABLED || 'false' }}
 
           # ==========================================
-          # 大盘复盘配置（本 flow 仅使用大盘相关配置，不读取 STOCK_LIST）
+          # 自选股配置
+          # 优先使用 GitHub Secrets/Variables 中的 STOCK_LIST，为空时使用默认值
           # ==========================================
-          MARKET_REVIEW_REGION: ${{ vars.MARKET_REVIEW_REGION || secrets.MARKET_REVIEW_REGION || 'cn' }}
-          MARKET_REVIEW_COLOR_SCHEME: ${{ vars.MARKET_REVIEW_COLOR_SCHEME || secrets.MARKET_REVIEW_COLOR_SCHEME || 'green_up' }}
+          STOCK_LIST: ${{ vars.STOCK_LIST || secrets.STOCK_LIST || '603031,002816,300842,002320,002130,603439' }}
 
           # ==========================================
           # 运行配置
@@ -345,8 +354,10 @@ jobs:
           REPORT_TYPE: ${{ vars.REPORT_TYPE || secrets.REPORT_TYPE || 'simple' }}
           REPORT_LANGUAGE: ${{ vars.REPORT_LANGUAGE || secrets.REPORT_LANGUAGE || '' }}
           REPORT_SHOW_LLM_MODEL: ${{ vars.REPORT_SHOW_LLM_MODEL || secrets.REPORT_SHOW_LLM_MODEL || 'true' }}
-          # 仅大盘复盘流程，强制启用大盘开关
-          MARKET_REVIEW_ENABLED: 'true'
+          # 聚合推送不需要每只股票单独发消息，汇总后一起推送
+          SINGLE_STOCK_NOTIFY: ${{ vars.SINGLE_STOCK_NOTIFY || secrets.SINGLE_STOCK_NOTIFY || 'false' }}
+          # 仅股票分析，强制关闭大盘复盘
+          MARKET_REVIEW_ENABLED: 'false'
           ANALYSIS_DELAY: ${{ vars.ANALYSIS_DELAY || secrets.ANALYSIS_DELAY || '0' }}
           TRADING_DAY_CHECK_ENABLED: ${{ vars.TRADING_DAY_CHECK_ENABLED || secrets.TRADING_DAY_CHECK_ENABLED || 'true' }}
           
@@ -374,11 +385,11 @@ jobs:
           fi
 
           echo "=========================================="
-          echo "🌐 每日大盘复盘（仅推送大盘消息）"
+          echo "📊 每日全股聚合推送（仅股票分析，不推送大盘）"
           echo "=========================================="
           echo "⏰ 时间: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')"
-          echo "🎯 运行模式: market-only（仅大盘复盘）"
-          echo "🌍 大盘区域: $MARKET_REVIEW_REGION"
+          echo "🎯 运行模式: stocks-only（仅股票分析）"
+          echo "📊 自选股: $STOCK_LIST"
           echo "📝 报告类型: $REPORT_TYPE"
           echo ""
           echo "=========================================="
@@ -440,14 +451,14 @@ jobs:
             echo "⚡ 已启用强制运行模式（跳过交易日检查）"
           fi
 
-          # 仅执行大盘复盘（不做个股分析）
-          python main.py --market-review $FORCE_RUN_ARG
+          # 仅执行股票分析（不做大盘复盘）
+          python main.py --no-market-review $FORCE_RUN_ARG
       
       - name: 上传分析报告
         uses: actions/upload-artifact@v6
         if: always()
         with:
-          name: market-review-reports-${{ github.run_number }}
+          name: allstocks-reports-${{ github.run_number }}
           path: |
             reports/
             logs/
@@ -458,7 +469,7 @@ jobs:
         run: |
           echo ""
           echo "=========================================="
-          echo "📊 大盘复盘完成"
+          echo "📊 全股聚合分析完成"
           echo "=========================================="
           if [ -d "reports" ] && [ "$(ls -A reports 2>/dev/null)" ]; then
             echo "生成的报告:"
