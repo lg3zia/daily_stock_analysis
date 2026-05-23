@@ -39,7 +39,7 @@ env:
 
 # 并发控制：仅在同一个 flow 内串行；与主分析 flow 互不阻塞
 concurrency:
-  group: stock-analysis-single-watch
+  group: stock-watch-603031
   cancel-in-progress: false
 
 jobs:
