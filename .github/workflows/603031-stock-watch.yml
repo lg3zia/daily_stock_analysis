@@ -1,7 +1,7 @@
-name: 每日大盘复盘
+name: 单股盯盘分析-安孚科技
 
-# 该 flow 仅做大盘复盘并通过已配置渠道推送，不再做自选股分析。
-# 个股分析请使用 01-single-stock-watch.yml 等独立 flow。
+# 单独盯一只（或一小组）股票，复用主分析流程，但使用独立的飞书机器人推送
+# 与 00-daily-analysis.yml 并行运行，互不干扰
 
 on:
   # 定时触发 - 每天北京时间 18:00 (UTC 10:00)
@@ -17,40 +17,62 @@ on:
         default: false
         type: boolean
 
-# 并发控制：同一时间只运行一个大盘复盘任务
+# ==========================================
+# 🔧 自定义配置区 - 后续调整请直接修改下方四项
+# ------------------------------------------
+# - STOCK_LIST            : 盯盘股票（多个用逗号分隔），例：600519、hk00700、AAPL
+# - FEISHU_WEBHOOK_URL    : 飞书自定义机器人 Webhook URL
+# - FEISHU_WEBHOOK_SECRET : 飞书机器人签名校验 Secret（如未启用签名留空字符串）
+# - FEISHU_WEBHOOK_KEYWORD: 飞书机器人关键字校验（如未启用关键字留空字符串）
+#
+# 备注：
+# 1) 这里直接硬编码方便快速调整；如需走密文管理，可改为
+#    `${{ secrets.XXX }}` 并配合 GitHub Environment 分组维护。
+# 2) job 已挂 `environment: single-stock-watch`，其它 secrets/vars
+#    （LLM、数据源等）可在该 environment 下单独配置以与主 flow 隔离。
+# ==========================================
+env:
+  STOCK_LIST: '603031'
+  FEISHU_WEBHOOK_URL: 'https://open.feishu.cn/open-apis/bot/v2/hook/bd8465dc-26e8-4c95-91ed-1271af7ed6e6'
+  #FEISHU_WEBHOOK_SECRET: 'TODO_FEISHU_WEBHOOK_SECRET'
+  #FEISHU_WEBHOOK_KEYWORD: 'TODO_FEISHU_KEYWORD'
+
+# 并发控制：仅在同一个 flow 内串行；与主分析 flow 互不阻塞
 concurrency:
-  group: stock-analysis-market-review
+  group: stock-analysis-single-watch
   cancel-in-progress: false
 
 jobs:
   analyze:
     runs-on: ubuntu-latest
+    # 通过 GitHub Environment 隔离这套 flow 专属的 secrets/vars
+    environment: single-stock-watch
     # 添加超时限制，防止任务卡死
     timeout-minutes: ${{ fromJSON(vars.ANALYSIS_TIMEOUT_MINUTES || '30') }}
-    
+
     steps:
       - name: 随机延迟（避免固定时间访问）
         run: sleep $((RANDOM % 60))  # 随机延迟0-60秒启动
-      
+
       - name: 检出代码
         uses: actions/checkout@v5
-      
+
       - name: 设置 Python 环境
         uses: actions/setup-python@v6
         with:
           python-version: '3.11'
           cache: 'pip'
-      
+
       - name: 安装依赖
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-      
+
       - name: 创建必要目录
         run: |
           mkdir -p data logs reports
-      
-      - name: 执行大盘复盘
+
+      - name: 执行单股盯盘分析
         env:
           # ==========================================
           # AI 配置
@@ -74,7 +96,7 @@ jobs:
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL || secrets.GEMINI_MODEL || 'gemini-3-flash-preview' }}
           GEMINI_MODEL_FALLBACK: ${{ vars.GEMINI_MODEL_FALLBACK || secrets.GEMINI_MODEL_FALLBACK || 'gemini-2.5-flash' }}
           GEMINI_REQUEST_DELAY: '3.0'
-          
+
           # AIHubMix（优先于 OPENAI_API_KEY，自动适配 base_url，推荐国内用户）
           AIHUBMIX_KEY: ${{ secrets.AIHUBMIX_KEY }}
 
@@ -87,7 +109,7 @@ jobs:
           # DeepSeek
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           DEEPSEEK_API_KEYS: ${{ secrets.DEEPSEEK_API_KEYS }}
-          
+
           # Anthropic / Claude
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ANTHROPIC_API_KEYS: ${{ secrets.ANTHROPIC_API_KEYS }}
@@ -238,11 +260,11 @@ jobs:
           LONGBRIDGE_ENABLE_OVERNIGHT: ${{ vars.LONGBRIDGE_ENABLE_OVERNIGHT || secrets.LONGBRIDGE_ENABLE_OVERNIGHT }}
           LONGBRIDGE_PUSH_CANDLESTICK_MODE: ${{ vars.LONGBRIDGE_PUSH_CANDLESTICK_MODE || secrets.LONGBRIDGE_PUSH_CANDLESTICK_MODE }}
           LONGBRIDGE_PRINT_QUOTE_PACKAGES: ${{ vars.LONGBRIDGE_PRINT_QUOTE_PACKAGES || secrets.LONGBRIDGE_PRINT_QUOTE_PACKAGES }}
-          
+
           # ==========================================
           # 搜索服务
           # ==========================================
-          ANSPIRE_API_KEYS: ${{ secrets.ANSPIRE_API_KEYS }} 
+          ANSPIRE_API_KEYS: ${{ secrets.ANSPIRE_API_KEYS }}
           ANSPIRE_LLM_MODEL: ${{ vars.ANSPIRE_LLM_MODEL || secrets.ANSPIRE_LLM_MODEL }}
           ANSPIRE_LLM_BASE_URL: ${{ vars.ANSPIRE_LLM_BASE_URL || secrets.ANSPIRE_LLM_BASE_URL }}
           ANSPIRE_LLM_ENABLED: ${{ vars.ANSPIRE_LLM_ENABLED || secrets.ANSPIRE_LLM_ENABLED }}
@@ -253,31 +275,28 @@ jobs:
           BRAVE_API_KEYS: ${{ secrets.BRAVE_API_KEYS }}
           SEARXNG_BASE_URLS: ${{ secrets.SEARXNG_BASE_URLS }}
           SEARXNG_PUBLIC_INSTANCES_ENABLED: ${{ vars.SEARXNG_PUBLIC_INSTANCES_ENABLED || secrets.SEARXNG_PUBLIC_INSTANCES_ENABLED }}
-          
+
           # ==========================================
           # 通知渠道（可同时配置多个，全部推送）
+          # 注意：本 flow 的飞书 4 项配置统一在文件顶部 env 块定义，
+          #      此处不再重复声明，避免 step env 覆盖顶层 env。
           # ==========================================
-          
+
           # 方式一：企业微信 Webhook
           WECHAT_WEBHOOK_URL: ${{ secrets.WECHAT_WEBHOOK_URL }}
           WECHAT_MSG_TYPE: ${{ vars.WECHAT_MSG_TYPE || secrets.WECHAT_MSG_TYPE || 'markdown' }}
-          
-          # 方式二：飞书 Webhook
-          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
-          FEISHU_WEBHOOK_SECRET: ${{ secrets.FEISHU_WEBHOOK_SECRET }}
-          FEISHU_WEBHOOK_KEYWORD: ${{ vars.FEISHU_WEBHOOK_KEYWORD || secrets.FEISHU_WEBHOOK_KEYWORD }}
-          
+
           # 方式三：Telegram
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_MESSAGE_THREAD_ID: ${{ secrets.TELEGRAM_MESSAGE_THREAD_ID }}
-          
+
           # 方式四：邮件
           EMAIL_SENDER: ${{ vars.EMAIL_SENDER || secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_RECEIVERS: ${{ vars.EMAIL_RECEIVERS || secrets.EMAIL_RECEIVERS }}
           EMAIL_SENDER_NAME: ${{ vars.EMAIL_SENDER_NAME || secrets.EMAIL_SENDER_NAME || 'daily_stock_analysis股票分析助手' }}
-          
+
           # 方式五：Pushover
           PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
           PUSHOVER_API_TOKEN: ${{ secrets.PUSHOVER_API_TOKEN }}
@@ -289,22 +308,22 @@ jobs:
           # 方式五扩展：Gotify
           GOTIFY_URL: ${{ secrets.GOTIFY_URL }}
           GOTIFY_TOKEN: ${{ secrets.GOTIFY_TOKEN }}
-          
-          # 方式六：PushPlus ⬅️ 新增！
+
+          # 方式六：PushPlus
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
           PUSHPLUS_TOPIC: ${{ vars.PUSHPLUS_TOPIC || secrets.PUSHPLUS_TOPIC }}
-          
+
           # 方式七：自定义 Webhook（钉钉、Bark、自建服务等）
           CUSTOM_WEBHOOK_URLS: ${{ secrets.CUSTOM_WEBHOOK_URLS }}
           CUSTOM_WEBHOOK_BEARER_TOKEN: ${{ secrets.CUSTOM_WEBHOOK_BEARER_TOKEN }}
           CUSTOM_WEBHOOK_BODY_TEMPLATE: ${{ vars.CUSTOM_WEBHOOK_BODY_TEMPLATE || secrets.CUSTOM_WEBHOOK_BODY_TEMPLATE }}
           WEBHOOK_VERIFY_SSL: ${{ vars.WEBHOOK_VERIFY_SSL || secrets.WEBHOOK_VERIFY_SSL || 'true' }}
-          
+
           # 方式八：Discord
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
           DISCORD_MAIN_CHANNEL_ID: ${{ secrets.DISCORD_MAIN_CHANNEL_ID }}
-          
+
           # 方式九：飞书云文档
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
@@ -334,10 +353,10 @@ jobs:
           NOTIFICATION_DAILY_DIGEST_ENABLED: ${{ vars.NOTIFICATION_DAILY_DIGEST_ENABLED || secrets.NOTIFICATION_DAILY_DIGEST_ENABLED || 'false' }}
 
           # ==========================================
-          # 大盘复盘配置（本 flow 仅使用大盘相关配置，不读取 STOCK_LIST）
+          # 自选股配置
+          # 注意：STOCK_LIST 已在文件顶部 env 块定义，此处不重复声明。
+          #      本 flow 仅分析单股，不读取 MARKET_REVIEW_REGION/COLOR_SCHEME。
           # ==========================================
-          MARKET_REVIEW_REGION: ${{ vars.MARKET_REVIEW_REGION || secrets.MARKET_REVIEW_REGION || 'cn' }}
-          MARKET_REVIEW_COLOR_SCHEME: ${{ vars.MARKET_REVIEW_COLOR_SCHEME || secrets.MARKET_REVIEW_COLOR_SCHEME || 'green_up' }}
 
           # ==========================================
           # 运行配置
@@ -345,11 +364,13 @@ jobs:
           REPORT_TYPE: ${{ vars.REPORT_TYPE || secrets.REPORT_TYPE || 'simple' }}
           REPORT_LANGUAGE: ${{ vars.REPORT_LANGUAGE || secrets.REPORT_LANGUAGE || '' }}
           REPORT_SHOW_LLM_MODEL: ${{ vars.REPORT_SHOW_LLM_MODEL || secrets.REPORT_SHOW_LLM_MODEL || 'true' }}
-          # 仅大盘复盘流程，强制启用大盘开关
-          MARKET_REVIEW_ENABLED: 'true'
+          # 单股盯盘默认开启“单只股票通知”，每只股票一条独立消息
+          SINGLE_STOCK_NOTIFY: ${{ vars.SINGLE_STOCK_NOTIFY || secrets.SINGLE_STOCK_NOTIFY || 'true' }}
+          # 仅单股分析流程，强制关闭大盘复盘
+          MARKET_REVIEW_ENABLED: 'false'
           ANALYSIS_DELAY: ${{ vars.ANALYSIS_DELAY || secrets.ANALYSIS_DELAY || '0' }}
           TRADING_DAY_CHECK_ENABLED: ${{ vars.TRADING_DAY_CHECK_ENABLED || secrets.TRADING_DAY_CHECK_ENABLED || 'true' }}
-          
+
           # ==========================================
           # 系统配置
           # ==========================================
@@ -358,32 +379,33 @@ jobs:
           # 筹码分布：默认 false（云端接口不稳定）；需启用时在 Settings → Variables 添加 ENABLE_CHIP_DISTRIBUTION=true
           ENABLE_CHIP_DISTRIBUTION: ${{ vars.ENABLE_CHIP_DISTRIBUTION || secrets.ENABLE_CHIP_DISTRIBUTION || 'false' }}
           # 实时行情数据源优先级（腾讯有量比且稳定，推荐首选）
-          # 可选值: tencent, akshare_sina, efinance, akshare_em, tushare
-          # 如果有 Tushare Pro 高积分账号，可将 tushare 放在首位
           REALTIME_SOURCE_PRIORITY: ${{ vars.REALTIME_SOURCE_PRIORITY || 'tencent,akshare_sina,efinance,akshare_em' }}
-          
+
         run: |
           # 处理 LITELLM YAML 配置文件
           if [ -n "$LITELLM_CONFIG_YAML" ] && [ -n "$LITELLM_CONFIG" ]; then
             echo "📝 使用 GitHub Actions Secrets/Variables 中的 LITELLM_CONFIG_YAML 配置"
-            # 确保目录存在
             mkdir -p "$(dirname "$LITELLM_CONFIG")"
-            # 写入配置文件（覆盖已有文件）
             echo "$LITELLM_CONFIG_YAML" > "$LITELLM_CONFIG"
             echo "✅ LITELLM 配置文件已写入: $LITELLM_CONFIG"
           fi
 
           echo "=========================================="
-          echo "🌐 每日大盘复盘（仅推送大盘消息）"
+          echo "🎯 单股盯盘分析（仅分析单股，不做大盘复盘）"
           echo "=========================================="
           echo "⏰ 时间: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')"
-          echo "🎯 运行模式: market-only（仅大盘复盘）"
-          echo "🌍 大盘区域: $MARKET_REVIEW_REGION"
+          echo "🎯 运行模式: stocks-only（仅单股分析）"
+          echo "📊 盯盘股票: $STOCK_LIST"
           echo "📝 报告类型: $REPORT_TYPE"
           echo ""
           echo "=========================================="
-          echo "📋 配置检查"
+          echo "📋 顶部配置区检查（来源：workflow 顶层 env）"
           echo "=========================================="
+          echo "  STOCK_LIST:              $([ -n "$STOCK_LIST" ] && [ "$STOCK_LIST" != "TODO_STOCK_CODE" ] && echo '✅ 已配置' || echo '❌ 仍为 TODO 占位符，请编辑 yml 文件填入实际值')"
+          echo "  FEISHU_WEBHOOK_URL:      $([ -n "$FEISHU_WEBHOOK_URL" ] && [ "$FEISHU_WEBHOOK_URL" != "TODO_FEISHU_WEBHOOK_URL" ] && echo '✅ 已配置' || echo '❌ 仍为 TODO 占位符')"
+          echo "  FEISHU_WEBHOOK_SECRET:   $([ -n "$FEISHU_WEBHOOK_SECRET" ] && [ "$FEISHU_WEBHOOK_SECRET" != "TODO_FEISHU_WEBHOOK_SECRET" ] && echo '✅ 已配置' || echo '⚪ 未启用签名/或仍为占位符')"
+          echo "  FEISHU_WEBHOOK_KEYWORD:  $([ -n "$FEISHU_WEBHOOK_KEYWORD" ] && [ "$FEISHU_WEBHOOK_KEYWORD" != "TODO_FEISHU_KEYWORD" ] && echo '✅ 已配置' || echo '⚪ 未启用关键字/或仍为占位符')"
+          echo ""
           echo "【AI 配置】"
           if [ -n "$LITELLM_CONFIG" ] || [ -n "$LITELLM_API_KEY" ] || [ -n "$LITELLM_MODEL" ] || [ -n "$ANSPIRE_API_KEYS" ]; then
             echo "  LiteLLM: ✅ 已配置"
@@ -401,38 +423,13 @@ jobs:
           echo "  Tushare Token: $([ -n "$TUSHARE_TOKEN" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "  Longbridge: $([ -n "$LONGBRIDGE_APP_KEY" ] && [ -n "$LONGBRIDGE_APP_SECRET" ] && [ -n "$LONGBRIDGE_ACCESS_TOKEN" ] && echo '✅ 已配置（美股/港股行情补充）' || echo '⚪ 未配置（仅 YFinance 等，无长桥调用）')"
           echo ""
-          echo "【搜索引擎】"
-          echo "  Bocha API Keys: $([ -n "$BOCHA_API_KEYS" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  Tavily API Keys: $([ -n "$TAVILY_API_KEYS" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  SerpAPI Keys: $([ -n "$SERPAPI_API_KEYS" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  MiniMax API Keys: $([ -n "$MINIMAX_API_KEYS" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  Brave API Keys: $([ -n "$BRAVE_API_KEYS" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  SearXNG Base URLs: $([ -n "$SEARXNG_BASE_URLS" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          case "${SEARXNG_PUBLIC_INSTANCES_ENABLED,,}" in
-            0|false|no|off)
-              echo "  SearXNG Public Instances: ❌ 已禁用"
-              ;;
-            "")
-              echo "  SearXNG Public Instances: ✅ 默认开启"
-              ;;
-            *)
-              echo "  SearXNG Public Instances: ✅ 已启用"
-              ;;
-          esac
-          echo ""
           echo "【通知渠道】"
-          echo "  PushPlus: $([ -n "$PUSHPLUS_TOKEN" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  ntfy: $([ -n "$NTFY_URL" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  Gotify: $([ -n "$GOTIFY_URL" ] && [ -n "$GOTIFY_TOKEN" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
+          echo "  飞书: $([ -n "$FEISHU_WEBHOOK_URL" ] && [ "$FEISHU_WEBHOOK_URL" != "TODO_FEISHU_WEBHOOK_URL" ] && echo '✅ 已配置（独立机器人）' || echo '❌ 未配置或仍为 TODO')"
           echo "  企业微信: $([ -n "$WECHAT_WEBHOOK_URL" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  飞书: $([ -n "$FEISHU_WEBHOOK_URL" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "  Telegram: $([ -n "$TELEGRAM_BOT_TOKEN" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  Discord: $([ -n "$DISCORD_WEBHOOK_URL" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  AstrBot: $([ -n "$ASTRBOT_URL" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  Slack: $(([ -n "$SLACK_WEBHOOK_URL" ] || ([ -n "$SLACK_BOT_TOKEN" ] && [ -n "$SLACK_CHANNEL_ID" ])) && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "=========================================="
           echo ""
-          
+
           # 构建命令行参数
           FORCE_RUN_ARG=""
           if [ "${{ github.event.inputs.force_run }}" = "true" ]; then
@@ -440,14 +437,14 @@ jobs:
             echo "⚡ 已启用强制运行模式（跳过交易日检查）"
           fi
 
-          # 仅执行大盘复盘（不做个股分析）
-          python main.py --market-review $FORCE_RUN_ARG
-      
+          # 仅执行单股分析（不做大盘复盘）
+          python main.py --no-market-review $FORCE_RUN_ARG
+
       - name: 上传分析报告
         uses: actions/upload-artifact@v6
         if: always()
         with:
-          name: market-review-reports-${{ github.run_number }}
+          name: single-stock-watch-reports-${{ github.run_number }}
           path: |
             reports/
             logs/
@@ -458,7 +455,7 @@ jobs:
         run: |
           echo ""
           echo "=========================================="
-          echo "📊 大盘复盘完成"
+          echo "📊 单股盯盘分析完成"
           echo "=========================================="
           if [ -d "reports" ] && [ "$(ls -A reports 2>/dev/null)" ]; then
             echo "生成的报告:"
